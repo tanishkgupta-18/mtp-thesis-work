@@ -1,0 +1,26 @@
+experiment:
+  name: "teacher_ascad_fixed"
+  dataset: "ASCAD_fix"
+  seed: 42
+
+data:
+  raw_path: "data/raw/ASCAD.h5"
+  num_profiling_traces: 50000
+  num_attack_traces: 10000
+  trace_length: 700
+  num_classes: 256
+  target_byte: 2
+
+model:
+  name: "teacher_cnn"
+  type: "cnn"
+
+training:
+  batch_size: 100
+  epochs: 50
+  learning_rate: 0.0001
+  optimizer: "adam"
+  early_stopping:
+    patience: 10
+    monitor: "val_loss"
+  checkpoint_dir: "checkpoints/teacher/"

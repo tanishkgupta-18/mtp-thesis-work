@@ -1,0 +1,30 @@
+experiment:
+  name: "kd_sca_ascad_fixed"
+  dataset: "ASCAD_fix"
+  seed: 42
+
+data:
+  raw_path: "data/raw/ASCAD.h5"
+  num_profiling_traces: 50000
+  num_attack_traces: 10000
+  trace_length: 700
+  num_classes: 256
+  target_byte: 2
+
+models:
+  teacher_checkpoint: "checkpoints/teacher/best_model.h5"
+  student_type: "lightweight_cnn"
+
+distillation:
+  temperature: 3.0      # Optimal T = 3 from paper for ASCAD_fix
+  alpha: 0.7            # Optimal alpha = 0.7 from paper for ASCAD_fix
+
+training:
+  batch_size: 100
+  epochs: 50
+  learning_rate: 0.0001
+  optimizer: "adam"
+  early_stopping:
+    patience: 10
+    monitor: "val_loss"
+  checkpoint_dir: "checkpoints/student_kd/"

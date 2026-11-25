@@ -1,0 +1,23 @@
+# Core Deep Learning Framework
+tensorflow>=2.10.0
+
+# Scientific Computing & Data Processing
+numpy>=1.22.0
+scipy>=1.9.0
+pandas>=1.5.0
+h5py>=3.7.0
+
+# Experiment Configuration & Logging
+pyyaml>=6.0
+tqdm>=4.64.0
+
+# Visualization (Guessing Entropy & Model Correlation heatmaps)
+matplotlib>=3.6.0
+seaborn>=0.12.0
+
+# Interactive Notebooks
+jupyter>=1.0.0
+ipykernel>=6.15.0
+
+# Machine Learning Utilities
+scikit-learn>=1.1.0
