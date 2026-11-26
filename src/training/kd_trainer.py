@@ -1,12 +1,17 @@
-from typing import Dict, Any, Optional
+
+from typing import Optional
+
 import tensorflow as tf
+
 from src.losses.distillation_loss import KnowledgeDistillationLoss
 
 
 class KDScaDistiller(tf.keras.Model):
-    """Knowledge Distillation Model for Side-Channel Analysis (KD-SCA).
+    """
+    Knowledge Distillation Model for Side-Channel Analysis.
 
-    Wraps teacher and student models, directing gradient updates exclusively to the student model.
+    The teacher remains frozen.
+    Only student parameters are updated.
     """
 
     def __init__(
@@ -18,17 +23,38 @@ class KDScaDistiller(tf.keras.Model):
         **kwargs
     ):
         super().__init__(**kwargs)
+
         self.student = student
         self.teacher = teacher
-        self.teacher.trainable = False  # Freeze teacher weights
+
+        # Freeze teacher
+        self.teacher.trainable = False
+
         self.temperature = temperature
         self.alpha = alpha
-        self.kd_loss_fn = KnowledgeDistillationLoss(temperature=temperature, alpha=alpha)
 
-        # Trackers
-        self.total_loss_tracker = tf.keras.metrics.Mean(name="total_loss")
-        self.ce_loss_tracker = tf.keras.metrics.Mean(name="ce_loss")
-        self.kd_loss_tracker = tf.keras.metrics.Mean(name="distill_loss")
+        self.kd_loss_fn = KnowledgeDistillationLoss(
+            temperature=temperature,
+            alpha=alpha
+        )
+
+        # Loss trackers
+        self.total_loss_tracker = tf.keras.metrics.Mean(
+            name="total_loss"
+        )
+
+        self.ce_loss_tracker = tf.keras.metrics.Mean(
+            name="ce_loss"
+        )
+
+        self.kd_loss_tracker = tf.keras.metrics.Mean(
+            name="distill_loss"
+        )
+
+        # Classification accuracy
+        self.accuracy_tracker = tf.keras.metrics.SparseCategoricalAccuracy(
+            name="accuracy"
+        )
 
     @property
     def metrics(self):
@@ -36,74 +62,127 @@ class KDScaDistiller(tf.keras.Model):
             self.total_loss_tracker,
             self.ce_loss_tracker,
             self.kd_loss_tracker,
+            self.accuracy_tracker
         ]
 
     def compile(self, optimizer, **kwargs):
-        super().compile(**kwargs)
-        self.optimizer = optimizer
+
+        super().compile(
+            optimizer=optimizer,
+            **kwargs
+        )
 
     def train_step(self, data):
+
         x, y = data
 
-        # Forward pass through frozen teacher (logits)
-        teacher_logits = self.teacher(x, training=False)
+        # Frozen teacher forward pass
+        teacher_logits = self.teacher(
+            x,
+            training=False
+        )
 
-        # Forward pass through student with gradient tape
+        teacher_logits = tf.stop_gradient(teacher_logits)
+
         with tf.GradientTape() as tape:
-            student_logits = self.student(x, training=True)
 
-            # Compute CE loss on true labels
-            student_probs = tf.nn.softmax(student_logits, axis=-1)
-            ce_loss = tf.keras.losses.categorical_crossentropy(y, student_probs)
-            ce_loss = tf.reduce_mean(ce_loss)
+            # Student forward pass
+            student_logits = self.student(
+                x,
+                training=True
+            )
 
-            # Compute softened probability distributions for distillation
-            soft_student = tf.nn.softmax(student_logits / self.temperature, axis=-1)
-            soft_teacher = tf.nn.softmax(teacher_logits / self.temperature, axis=-1)
-            kd_loss = tf.keras.losses.kl_divergence(soft_teacher, soft_student)
-            kd_loss = tf.reduce_mean(kd_loss)
+            # Compute combined KD loss
+            total_loss, ce_loss, kd_loss = (
+                self.kd_loss_fn.compute_kd_loss(
+                    y,
+                    student_logits,
+                    teacher_logits
+                )
+            )
 
-            # Dual supervision combined loss
-            total_loss = (1.0 - self.alpha) * ce_loss + (self.alpha * (self.temperature ** 2)) * kd_loss
+            # Include regularization losses if present
+            if self.student.losses:
+                total_loss += tf.add_n(self.student.losses)
 
-        # Apply gradients to student weights only
+        # Gradients only for student
         trainable_vars = self.student.trainable_variables
-        gradients = tape.gradient(total_loss, trainable_vars)
-        self.optimizer.apply_gradients(zip(gradients, trainable_vars))
 
+        gradients = tape.gradient(
+            total_loss,
+            trainable_vars
+        )
+
+        gradient_pairs = [
+            (g, v)
+            for g, v in zip(gradients, trainable_vars)
+            if g is not None
+        ]
+
+        if not gradient_pairs:
+            raise RuntimeError("No student gradients were calculated.")
+
+        self.optimizer.apply_gradients(gradient_pairs)
+
+        # Update metrics
         self.total_loss_tracker.update_state(total_loss)
         self.ce_loss_tracker.update_state(ce_loss)
         self.kd_loss_tracker.update_state(kd_loss)
+
+        self.accuracy_tracker.update_state(
+            y,
+            student_logits
+        )
 
         return {
             "total_loss": self.total_loss_tracker.result(),
             "ce_loss": self.ce_loss_tracker.result(),
             "distill_loss": self.kd_loss_tracker.result(),
+            "accuracy": self.accuracy_tracker.result()
         }
 
     def test_step(self, data):
+
         x, y = data
-        teacher_logits = self.teacher(x, training=False)
-        student_logits = self.student(x, training=False)
 
-        student_probs = tf.nn.softmax(student_logits, axis=-1)
-        ce_loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, student_probs))
+        # Inference through frozen teacher and student
+        teacher_logits = self.teacher(
+            x,
+            training=False
+        )
 
-        soft_student = tf.nn.softmax(student_logits / self.temperature, axis=-1)
-        soft_teacher = tf.nn.softmax(teacher_logits / self.temperature, axis=-1)
-        kd_loss = tf.reduce_mean(tf.keras.losses.kl_divergence(soft_teacher, soft_student))
+        student_logits = self.student(
+            x,
+            training=False
+        )
 
-        total_loss = (1.0 - self.alpha) * ce_loss + (self.alpha * (self.temperature ** 2)) * kd_loss
+        total_loss, ce_loss, kd_loss = (
+            self.kd_loss_fn.compute_kd_loss(
+                y,
+                student_logits,
+                teacher_logits
+            )
+        )
 
         self.total_loss_tracker.update_state(total_loss)
         self.ce_loss_tracker.update_state(ce_loss)
         self.kd_loss_tracker.update_state(kd_loss)
 
+        self.accuracy_tracker.update_state(
+            y,
+            student_logits
+        )
+
         return {
             "total_loss": self.total_loss_tracker.result(),
             "ce_loss": self.ce_loss_tracker.result(),
             "distill_loss": self.kd_loss_tracker.result(),
+            "accuracy": self.accuracy_tracker.result()
         }
 
     def call(self, inputs, training=False):
-        return self.student(inputs, training=training)
+
+        return self.student(
+            inputs,
+            training=training
+        )

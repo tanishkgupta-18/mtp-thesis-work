@@ -1,58 +1,74 @@
+
 import tensorflow as tf
-from tensorflow.keras import losses
 
 
-class KnowledgeDistillationLoss(losses.Loss):
-    """Knowledge Distillation loss combining hard label cross-entropy and soft teacher supervision.
+class KnowledgeDistillationLoss:
+    """
+    Knowledge Distillation loss for KD-SCA.
 
-    L_total = (1 - alpha) * L_CE(y_true, y_student_pred) + alpha * (T^2) * L_KL(p_teacher_T, p_student_T)
+    L_total = (1-alpha) * L_CE
+              + alpha * T^2 * L_KD
+
+    Uses sparse integer labels and raw logits.
     """
 
     def __init__(
         self,
         temperature: float = 3.0,
-        alpha: float = 0.7,
-        name: str = "kd_loss",
-        **kwargs
+        alpha: float = 0.7
     ):
-        super().__init__(name=name, **kwargs)
+        if temperature <= 0:
+            raise ValueError("Temperature must be positive.")
+
+        if not 0.0 <= alpha <= 1.0:
+            raise ValueError("Alpha must be between 0 and 1.")
+
         self.temperature = temperature
         self.alpha = alpha
-        self.ce_loss_fn = losses.CategoricalCrossentropy(from_logits=False)
-        self.kl_div_fn = losses.KLDivergence()
-
-    def call(self, y_true: tf.Tensor, y_pred: tf.Tensor) -> tf.Tensor:
-        """Compute standard loss if called directly.
-
-        For distillation training, use compute_kd_loss() with student and teacher logits/probabilities.
-        """
-        return self.ce_loss_fn(y_true, y_pred)
 
     def compute_kd_loss(
         self,
-        y_true: tf.Tensor,
-        student_logits: tf.Tensor,
-        teacher_logits: tf.Tensor,
-    ) -> tf.Tensor:
-        """Compute dual-supervision KD loss.
+        y_true,
+        student_logits,
+        teacher_logits
+    ):
+        # Hard-label cross-entropy
+        ce_loss = tf.keras.losses.sparse_categorical_crossentropy(
+            y_true,
+            student_logits,
+            from_logits=True
+        )
 
-        Args:
-            y_true: One-hot encoded ground truth labels.
-            student_logits: Unscaled output logits from student model.
-            teacher_logits: Unscaled output logits from teacher model.
+        ce_loss = tf.reduce_mean(ce_loss)
 
-        Returns:
-            tf.Tensor: Total combined distillation loss.
-        """
-        # Hard label cross-entropy loss on student predictions (T = 1)
-        student_probs = tf.nn.softmax(student_logits, axis=-1)
-        ce_loss = self.ce_loss_fn(y_true, student_probs)
+        # Temperature-scaled log probabilities
+        T = self.temperature
 
-        # Soft label distillation loss with temperature scaling
-        soft_student = tf.nn.softmax(student_logits / self.temperature, axis=-1)
-        soft_teacher = tf.nn.softmax(teacher_logits / self.temperature, axis=-1)
-        kd_loss = self.kl_div_fn(soft_teacher, soft_student)
+        teacher_log_probs = tf.nn.log_softmax(
+            teacher_logits / T,
+            axis=-1
+        )
 
-        # Total combined loss
-        total_loss = (1.0 - self.alpha) * ce_loss + (self.alpha * (self.temperature ** 2)) * kd_loss
-        return total_loss
+        student_log_probs = tf.nn.log_softmax(
+            student_logits / T,
+            axis=-1
+        )
+
+        teacher_probs = tf.exp(teacher_log_probs)
+
+        # KL(P_teacher || P_student)
+        kd_loss = tf.reduce_sum(
+            teacher_probs *
+            (teacher_log_probs - student_log_probs),
+            axis=-1
+        )
+
+        kd_loss = tf.reduce_mean(kd_loss)
+
+        # Dual supervision
+        total_loss = (
+            (1.0 - self.alpha) * ce_loss
+            + self.alpha * (T ** 2) * kd_loss
+        )
+
+        return total_loss, ce_loss, kd_loss
